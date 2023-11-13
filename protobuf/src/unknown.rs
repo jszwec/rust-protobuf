@@ -6,6 +6,7 @@ use std::hash::BuildHasherDefault;
 use std::hash::Hash;
 use std::hash::Hasher;
 use std::slice;
+use std::vec::IntoIter;
 
 use crate::reflect::ReflectValueRef;
 use crate::rt;
@@ -160,6 +161,17 @@ impl UnknownValues {
         }
     }
 
+    /// Creates a consuming iterator, that is, one that moves each value out of
+    /// UnknownValues. UnknownValues cannot be used after calling this.
+    pub fn into_iter(self) -> OwnedUnknownValuesIter {
+        OwnedUnknownValuesIter {
+            fixed32: self.fixed32.into_iter(),
+            fixed64: self.fixed64.into_iter(),
+            varint: self.varint.into_iter(),
+            length_delimited: self.length_delimited.into_iter(),
+        }
+    }
+
     pub(crate) fn any(&self) -> Option<UnknownValueRef> {
         if let Some(last) = self.fixed32.last() {
             Some(UnknownValueRef::Fixed32(*last))
@@ -181,6 +193,42 @@ impl<'a> IntoIterator for &'a UnknownValues {
 
     fn into_iter(self) -> UnknownValuesIter<'a> {
         self.iter()
+    }
+}
+
+impl IntoIterator for UnknownValues {
+    type Item = UnknownValue;
+    type IntoIter = OwnedUnknownValuesIter;
+
+    fn into_iter(self) -> OwnedUnknownValuesIter {
+        Self::into_iter(self)
+    }
+}
+
+pub struct OwnedUnknownValuesIter {
+    fixed32: IntoIter<u32>,
+    fixed64: IntoIter<u64>,
+    varint: IntoIter<u64>,
+    length_delimited: IntoIter<Vec<u8>>,
+}
+
+impl Iterator for OwnedUnknownValuesIter {
+    type Item = UnknownValue;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if let Some(fixed32) = self.fixed32.next() {
+            return Some(UnknownValue::Fixed32(fixed32));
+        }
+        if let Some(fixed64) = self.fixed64.next() {
+            return Some(UnknownValue::Fixed64(fixed64));
+        }
+        if let Some(varint) = self.varint.next() {
+            return Some(UnknownValue::Varint(varint));
+        }
+        if let Some(length_delimited) = self.length_delimited.next() {
+            return Some(UnknownValue::LengthDelimited(length_delimited));
+        }
+        None
     }
 }
 
@@ -313,10 +361,11 @@ impl UnknownFields {
     }
 
     /// Remove unknown field by number
-    pub fn remove(&mut self, field_number: u32) {
-        if let Some(fields) = &mut self.fields {
-            fields.remove(&field_number);
-        }
+    pub fn remove(&mut self, field_number: u32) -> Option<OwnedUnknownValuesIter> {
+        self.fields
+            .as_mut()
+            .and_then(|fields| fields.remove(&field_number))
+            .map(|v| v.into_iter())
     }
 
     /// Iterate over all unknowns
